@@ -2,9 +2,12 @@
 
 # status: very early days
 
-Some hacking to get an old Maschine Mk1 that @lowaa gave me working on contemporary OSes- at least
+Some hacking to get an old Maschine Mk1 that [@lowaa](https://github.com/lowaa) gave me working on contemporary OSes- at least
 works on macOS at the moment but because it's using [boddlnagg/midir](https://github.com/boddlnagg/midir)
 under the hood, in theory it should work on Linux as well (and maybe Windows? I dunno).
+
+Props to [shaduzlabs/cabl](https://github.com/shaduzlabs/cabl) and [quasart/cabl](https://github.com/quasart/cabl) for having
+done the hard part of the reverse engineering already.
 
 ## Tasks
 
