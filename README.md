@@ -60,3 +60,17 @@ cargo build && target/debug/rust_maschine_mk1
   - I've just been using [Bespoke](https://www.bespokesynth.com/) but given it's a MIDI device, it should work with anything
 
 You can build and run the code like this
+
+## Iterating
+
+I normally run two shells:
+
+```shell
+# shell 1
+find Cargo.toml src | entr -n -r -cc -s "sleep 1 ; cargo build"
+
+# shell 2
+find target/debug/rust_maschine_mk1 | entr -n -r -cc -s "time RUST_LOG=trace target/debug/rust_maschine_mk1; echo ''; date"
+```
+
+Then I'll have Bespoke Synth running to message around with the controller fed into an instrument or VST or something.
