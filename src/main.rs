@@ -1,4 +1,6 @@
 use anyhow::{Context, Result, anyhow};
+use chrono::Local;
+use core::f64;
 use midir::{MidiOutput, os::unix::VirtualOutput};
 use nusb::{
     MaybeFuture, list_devices,
@@ -12,197 +14,6 @@ use std::{
     time::Duration,
 };
 
-use plotters::prelude::*;
-use plotters::style::text_anchor::{HPos, VPos};
-use plotters_backend::{
-    BackendColor, BackendStyle, BackendTextStyle, DrawingBackend, DrawingErrorKind,
-};
-
-//
-// <plotters>
-//
-
-#[derive(Copy, Clone)]
-enum PixelState {
-    Empty,
-    HLine,
-    VLine,
-    Cross,
-    Pixel,
-    Text(char),
-    Circle(bool),
-}
-
-impl PixelState {
-    fn to_char(self) -> char {
-        match self {
-            Self::Empty => ' ',
-            Self::HLine => '-',
-            Self::VLine => '|',
-            Self::Cross => '+',
-            Self::Pixel => '.',
-            Self::Text(c) => c,
-            Self::Circle(filled) => {
-                if filled {
-                    '@'
-                } else {
-                    'O'
-                }
-            }
-        }
-    }
-
-    fn update(&mut self, new_state: PixelState) {
-        let next_state = match (*self, new_state) {
-            (Self::HLine, Self::VLine) => Self::Cross,
-            (Self::VLine, Self::HLine) => Self::Cross,
-            (_, Self::Circle(what)) => Self::Circle(what),
-            (Self::Circle(what), _) => Self::Circle(what),
-            (_, Self::Pixel) => Self::Pixel,
-            (Self::Pixel, _) => Self::Pixel,
-            (_, new) => new,
-        };
-
-        *self = next_state;
-    }
-}
-
-pub struct TextDrawingBackend(Vec<PixelState>);
-
-impl DrawingBackend for TextDrawingBackend {
-    type ErrorType = std::io::Error;
-
-    fn get_size(&self) -> (u32, u32) {
-        (200, 30)
-    }
-
-    fn ensure_prepared(&mut self) -> Result<(), DrawingErrorKind<std::io::Error>> {
-        Ok(())
-    }
-
-    fn present(&mut self) -> Result<(), DrawingErrorKind<std::io::Error>> {
-        for r in 0..30 {
-            let mut buf = String::new();
-            for c in 0..200 {
-                buf.push(self.0[r * 200 + c].to_char());
-            }
-            println!("{}", buf);
-        }
-
-        Ok(())
-    }
-
-    fn draw_pixel(
-        &mut self,
-        pos: (i32, i32),
-        color: BackendColor,
-    ) -> Result<(), DrawingErrorKind<std::io::Error>> {
-        if color.alpha > 0.3 {
-            self.0[(pos.1 * 200 + pos.0) as usize].update(PixelState::Pixel);
-        }
-        Ok(())
-    }
-
-    fn draw_line<S: BackendStyle>(
-        &mut self,
-        from: (i32, i32),
-        to: (i32, i32),
-        style: &S,
-    ) -> Result<(), DrawingErrorKind<Self::ErrorType>> {
-        if from.0 == to.0 {
-            let x = from.0;
-            let y0 = from.1.min(to.1);
-            let y1 = from.1.max(to.1);
-            for y in y0..y1 {
-                // self.0[(y * 200 + x) as usize].update(PixelState::VLine);
-                self.0[(y * 200 + x) as usize].update(PixelState::Pixel);
-            }
-            return Ok(());
-        }
-
-        if from.1 == to.1 {
-            let y = from.1;
-            let x0 = from.0.min(to.0);
-            let x1 = from.0.max(to.0);
-            for x in x0..x1 {
-                // self.0[(y * 200 + x) as usize].update(PixelState::HLine);
-                self.0[(y * 200 + x) as usize].update(PixelState::Pixel);
-            }
-            return Ok(());
-        }
-
-        plotters_backend::rasterizer::draw_line(self, from, to, style)
-    }
-
-    fn estimate_text_size<S: BackendTextStyle>(
-        &self,
-        text: &str,
-        _: &S,
-    ) -> Result<(u32, u32), DrawingErrorKind<Self::ErrorType>> {
-        Ok((text.len() as u32, 1))
-    }
-
-    fn draw_text<S: BackendTextStyle>(
-        &mut self,
-        text: &str,
-        style: &S,
-        pos: (i32, i32),
-    ) -> Result<(), DrawingErrorKind<Self::ErrorType>> {
-        let (width, height) = self.estimate_text_size(text, style)?;
-        let (width, height) = (width as i32, height as i32);
-        let dx = match style.anchor().h_pos {
-            HPos::Left => 0,
-            HPos::Right => -width,
-            HPos::Center => -width / 2,
-        };
-        let dy = match style.anchor().v_pos {
-            VPos::Top => 0,
-            VPos::Center => -height / 2,
-            VPos::Bottom => -height,
-        };
-        let offset = (pos.1 + dy).max(0) * 200 + (pos.0 + dx).max(0);
-        for (idx, chr) in (offset..).zip(text.chars()) {
-            self.0[idx as usize].update(PixelState::Text(chr));
-        }
-        Ok(())
-    }
-}
-
-fn draw_chart<DB: DrawingBackend>(
-    b: DrawingArea<DB, plotters::coord::Shift>,
-    x0_series: Vec<(f64, f64)>,
-    x1_series: Vec<(f64, f64)>,
-    angle_series: Vec<(f64, f64)>,
-) -> Result<()>
-where
-    DB::ErrorType: 'static,
-{
-    let mut chart = ChartBuilder::on(&b)
-        .margin(1)
-        .build_cartesian_2d(0.0..255.0, 0.0..255.0)?;
-
-    chart
-        .configure_mesh()
-        .disable_x_mesh()
-        .disable_y_mesh()
-        .draw()?;
-
-    chart.draw_series(LineSeries::new(x0_series, &RED))?;
-
-    chart.draw_series(LineSeries::new(x1_series, &BLUE))?;
-
-    // chart.draw_series(LineSeries::new(angle_series, &GREEN))?;
-
-    print!("{}[2J", 27 as char);
-    b.present()?;
-
-    Ok(())
-}
-
-//
-// </plotters>
-//
-
 const MASCHINE_MK1_VID: u16 = 0x17cc;
 const MASCHINE_MK1_PID: u16 = 0x0808;
 
@@ -212,12 +23,24 @@ const CHAN_1_POLYPHONIC_AFTERTOUCH: u8 = 0xA0;
 
 const CC_PREFIX: u8 = 0xB0;
 const CC_CHANNEL: u8 = 1;
-const CC_74: u8 = 74;
+const CC_MAPPING: [u8; 11] = [
+    77, // 0 = right display, dial 4
+    73, // 1 = left display, dial 4
+    79, // 2 = swing
+    76, // 3 = right display, dial 3
+    72, // 4 = left display, dial 3
+    78, // 5 = tempo
+    75, // 6 = right display, dial 2
+    71, // 7 = left display, dial 2
+    7,  // 8 = volume
+    74, // 9 = right display, dial 1
+    70, // 10 = left display, dial 1
+];
 
 fn main() -> Result<()> {
     // a minor starting at A0
+    // i = pad  = delta
     let pad_notes: Vec<u8> = vec![
-        //  i = pad  = delta
         53, //  0 = 13 : = 0
         55, //  1 = 14 : + 2
         57, //  2 = 15 : + 2
@@ -238,7 +61,6 @@ fn main() -> Result<()> {
 
     // compatible with bespoke synth drumplayer
     // let pad_notes: Vec<u8> = vec![
-    //         //  i = pad  = delta
     //     36, //  0 = 13 : = 0
     //     37, //  1 = 14 : + 2
     //     38, //  2 = 15 : + 2
@@ -258,14 +80,180 @@ fn main() -> Result<()> {
     // ];
 
     //
-    // setup MIDI stuff
+    // setup midi stuff
     //
 
     let midi_out = MidiOutput::new("rust-maschine-mk1-midi-out")?;
 
+    // TODO: need this kinda weird handling of this due to differences between macOS and Linux
+    //   re: the error not being Send
     let midi_output_conn = Arc::new(Mutex::new(
-        midi_out.create_virtual("rust-maschine-mk1-midi-out-virtual")?,
+        match midi_out.create_virtual("rust-maschine-mk1-midi-out-virtual") {
+            Ok(midi_output_conn) => Ok(midi_output_conn),
+            Err(err) => Err(anyhow!("some kinda error: {:?}", err)),
+        }
+        .context("failed to create virtual midi port")?,
     ));
+
+    //
+    // handle midi for dials
+    //
+
+    let midi_output_conn_for_send_dial = midi_output_conn.clone();
+
+    let value_by_cc: Arc<Mutex<HashMap<u8, u8>>> = Arc::new(Mutex::new(HashMap::new()));
+
+    let send_dial = move |dial: usize, value: u8| -> Result<()> {
+        let now = Local::now();
+
+        assert!(
+            dial < 12,
+            "{now} | send_dial; dial out of spec- dial: {dial}, value: {value}",
+        );
+
+        let cc = CC_MAPPING[dial];
+
+        assert!(
+            value < 128,
+            "{now} | send_dial; value out of spec- cc: {cc}, value: {value}",
+        );
+
+        let mut midi_output_conn = midi_output_conn_for_send_dial
+            .lock()
+            .ok()
+            .context("failed to lock mutex")?;
+
+        let last_value = {
+            let locked_value_by_cc = value_by_cc
+                .lock()
+                .ok()
+                .context("send_dial: failed to lock value_by_cc")?;
+
+            match locked_value_by_cc.get(&cc) {
+                Some(last_value) => *last_value,
+                None => 255, // 255 is a sentinel because it's not possible
+            }
+        };
+
+        if last_value != value {
+            println!(
+                "{now} | send_dial; cc: {cc}, last_value: {last_value}, value: {value}, changed: {}",
+                last_value != value
+            );
+            midi_output_conn
+                .send(&[CC_PREFIX + CC_CHANNEL, cc, value])
+                .context("send_pad: note off failed")?;
+        }
+
+        {
+            let mut locked_value_by_cc = value_by_cc
+                .lock()
+                .ok()
+                .context("send_dial: failed to lock value_by_cc")?;
+
+            locked_value_by_cc.insert(cc, value);
+        };
+
+        Ok(())
+    };
+
+    //
+    // handle midi for pads
+    //
+
+    let midi_output_conn_for_send_pads = midi_output_conn.clone();
+
+    let pad_is_on_by_note: Arc<Mutex<HashMap<u8, bool>>> = Arc::new(Mutex::new(HashMap::new()));
+
+    let velocity_by_note: Arc<Mutex<HashMap<u8, u8>>> = Arc::new(Mutex::new(HashMap::new()));
+
+    let send_pad = move |note: u8, velocity: u8, desired_is_on: bool| -> Result<()> {
+        let now = Local::now();
+
+        assert!(
+            note < 128,
+            "{now} | send pad; note out of spec- note: {note}, velocity: {velocity}, desired_is_on: {desired_is_on}",
+        );
+
+        let mut midi_output_conn = midi_output_conn_for_send_pads
+            .lock()
+            .ok()
+            .context("failed to lock mutex")?;
+
+        let mut actual_is_on = {
+            let locked_pad_is_on_by_note = pad_is_on_by_note
+                .lock()
+                .ok()
+                .context("send_pad: failed to lock pad_is_on_by_note")?;
+
+            match locked_pad_is_on_by_note.get(&note) {
+                Some(last_is_on) => *last_is_on,
+                None => false,
+            }
+        };
+
+        let last_velocity = {
+            let locked_velocity_by_note = velocity_by_note
+                .lock()
+                .ok()
+                .context("send_pad: failed to lock velocity_by_note")?;
+
+            match locked_velocity_by_note.get(&note) {
+                Some(last_velocity) => *last_velocity,
+                None => 255, // 255 is a sentinel because it's not possible
+            }
+        };
+
+        if desired_is_on {
+            if actual_is_on {
+                if last_velocity != velocity {
+                    println!(
+                        "{now} | send_pad; state: aftertouch, note: {note}, last_velocity: {last_velocity}, velocity: {velocity}, changed: {}",
+                        last_velocity != velocity
+                    );
+                    midi_output_conn
+                        .send(&[CHAN_1_POLYPHONIC_AFTERTOUCH, note, velocity])
+                        .context("send_pad: note aftertouch failed")?;
+                }
+            } else {
+                println!("{now} | send_pad; state: on, note: {note}, velocity: {velocity}");
+                midi_output_conn
+                    .send(&[CHAN_1_NOTE_ON, note, velocity])
+                    .context("send_pad: note on failed")?;
+
+                actual_is_on = true;
+            }
+        } else {
+            if actual_is_on {
+                println!("{now} | send_pad; state: off, note: {note}, velocity: {velocity}");
+                midi_output_conn
+                    .send(&[CHAN_1_NOTE_OFF, note, velocity])
+                    .context("send_pad: note off failed")?;
+
+                actual_is_on = false;
+            };
+        }
+
+        {
+            let mut locked_pad_is_on_by_note = pad_is_on_by_note
+                .lock()
+                .ok()
+                .context("send_pad: failed to lock pad_is_on_by_note")?;
+
+            locked_pad_is_on_by_note.insert(note, actual_is_on);
+        };
+
+        {
+            let mut locked_velocity_by_note = velocity_by_note
+                .lock()
+                .ok()
+                .context("send_pad: failed to lock velocity_by_note")?;
+
+            locked_velocity_by_note.insert(note, velocity);
+        };
+
+        Ok(())
+    };
 
     //
     // try to find the device and dump out some info for it
@@ -342,37 +330,14 @@ fn main() -> Result<()> {
 
             match control_writer.write(&buf) {
                 Ok(_) => {}
-                Err(_err) => {
-                    println!("control_writer; err: {:?}", _err)
+                Err(err) => {
+                    println!("control_writer; err: {:?}", err)
                 }
             }
 
             thread::sleep(Duration::from_millis(10));
         }
     });
-
-    //
-    // handle the midi for the dials
-    //
-
-    let midi_output_conn_for_send_dial = midi_output_conn.clone();
-
-    let send_dial = move |dial: usize, value: u8| -> Result<()> {
-        let mut midi_output_conn = midi_output_conn_for_send_dial
-            .lock()
-            .ok()
-            .context("failed to lock mutex")?;
-
-        assert!(dial < 128);
-
-        let cc = CC_74;
-
-        midi_output_conn
-            .send(&[CC_PREFIX + CC_CHANNEL, cc, value])
-            .context("send_pad: note off failed")?;
-
-        Ok(())
-    };
 
     //
     // handle buttons and dials input
@@ -389,23 +354,19 @@ fn main() -> Result<()> {
     }
 
     let mut angles: Vec<f64> = vec![];
-    for _ in 0..16 {
+    for _ in 0..11 {
         angles.push(0.0);
     }
 
-    let mut accumulators: Vec<f64> = vec![];
-    for _ in 0..16 {
-        accumulators.push(0.0);
+    let mut last_angles: Vec<f64> = vec![];
+    for _ in 0..11 {
+        last_angles.push(0.0);
     }
 
     let mut dials: Vec<u8> = vec![];
-    for _ in 0..16 {
+    for _ in 0..11 {
         dials.push(0);
     }
-
-    let mut x0_history: Vec<f64> = vec![];
-    let mut x1_history: Vec<f64> = vec![];
-    let mut angle_history: Vec<f64> = vec![];
 
     let buttons_and_dials_reader_thread = thread::spawn(move || -> Result<()> {
         loop {
@@ -431,8 +392,6 @@ fn main() -> Result<()> {
                         // decoding
                         //
 
-                        let mut any_changed = false;
-
                         // values are 1-byte bitmasks (each bit is a button state)
                         for (i, x) in raw_msg.iter().enumerate() {
                             for j in 0..8 {
@@ -450,35 +409,12 @@ fn main() -> Result<()> {
 
                                 b -= 8;
 
-                                let old_pressed = buttons[b];
-
-                                if old_pressed != pressed {
-                                    any_changed = true
-                                }
-
                                 buttons[b] = pressed;
                             }
                         }
 
                         //
-                        // logging
-                        //
-
-                        if any_changed {
-                            let mut line = String::new();
-                            for (i, n) in buttons.iter().enumerate() {
-                                let v = match n {
-                                    true => 1,
-                                    false => 0,
-                                };
-
-                                line.push_str(&format!("{i: >2}={v: <3}"));
-                            }
-                            println!("{}", line);
-                        }
-
-                        //
-                        // sending MIDI
+                        // sending midi
                         //
 
                         for _n in buttons.iter() {
@@ -498,123 +434,72 @@ fn main() -> Result<()> {
                         // decoding
                         //
 
-                        let mut any_changed = false;
-
+                        // values are little-endian u16 (each 2-byte chunks is a pad state)
+                        // first byte doesn't seem important
+                        // last 10 bytes don't seem important
                         let raw_dials = &raw_msg[1..23];
 
                         if raw_dials.ne(&last_raw_dials) {
-                            // values are little-endian u16 (each 2-byte chunks is a pad state)
-                            // first byte doesn't seem important
-                            // last 10 bytes don't seem important
                             for (i, x) in raw_dials.chunks(2).enumerate() {
-                                assert!(x.len() == 2);
+                                assert!(
+                                    x.len() == 2,
+                                    "got length {} for raw_dials[{i}] instead of length 2",
+                                    x.len()
+                                );
 
-                                let raw_n = u16::from_be_bytes([x[0], x[1]]);
+                                let x0 = (x[0] as f64 / 127.0) - 1.0; // normalize
+                                let x1 = (x[1] as f64 / 127.0) - 1.0; // normalize
 
-                                let x0 = x[0] as f64;
-                                let x1 = x[1] as f64;
+                                let a = x0.atan2(x1) / f64::consts::PI;
+                                let last_a = last_angles[i];
+                                let d = a - last_a;
 
-                                let angle = x0.atan2(x1);
-                                let last_angle = angles[i];
-                                let mut delta = angle - last_angle;
+                                last_angles[i] = a;
 
-                                if delta > std::f64::consts::PI {
-                                    delta -= 2.0 * std::f64::consts::PI;
-                                } else if delta < -std::f64::consts::PI {
-                                    delta += 2.0 * std::f64::consts::PI;
+                                //
+                                // this confusing block is all about the overflow
+                                //
+
+                                let mut b = a;
+                                let mut last_b = last_a;
+                                let mut e = d;
+
+                                if d >= 1.0 {
+                                    last_b = -last_b;
+                                    e = b - last_b;
+                                    if e >= 0.0 {
+                                        e = -e;
+                                    }
+                                } else if d < -1.0 {
+                                    b = -b;
+                                    e = b - last_b;
+                                    if e < 0.0 {
+                                        e = -e;
+                                    }
                                 }
 
-                                angles[i] = angle;
-                                accumulators[i] += delta;
+                                let f = ((-e / 2.0) * 255.0) as i8; // re-scale to midi range (0 -> 127 in this case)
 
-                                let mut n = accumulators[i] as f64;
-
-                                n /= 65535.0;
-                                n *= 127.0;
-
-                                assert!(n <= 127.0);
-
-                                let n = n as u8;
-
-                                let old_n = dials[i];
-
-                                if n != old_n {
-                                    any_changed = true;
+                                let mut g = dials[i] as i8;
+                                g = g.saturating_add(f);
+                                if g < 0 {
+                                    g = 0;
                                 }
 
-                                dials[i] = n;
-
-                                if i == 10 {
-                                    x0_history.push(x0);
-                                    if x0_history.len() > 256 {
-                                        x0_history = x0_history
-                                            [x0_history.len() - 256..x0_history.len()]
-                                            .into();
-                                    }
-
-                                    x1_history.push(x1);
-                                    if x1_history.len() > 256 {
-                                        x1_history = x1_history
-                                            [x1_history.len() - 256..x1_history.len()]
-                                            .into();
-                                    }
-
-                                    angle_history.push(angle / 1.571 * 255.0);
-                                    if angle_history.len() > 256 {
-                                        angle_history = angle_history
-                                            [angle_history.len() - 256..angle_history.len()]
-                                            .into();
-                                    }
-
-                                    draw_chart(
-                                        TextDrawingBackend(vec![PixelState::Empty; 10000])
-                                            .into_drawing_area(),
-                                        x0_history
-                                            .iter()
-                                            .enumerate()
-                                            .map(|(i, x)| (i as f64, *x as f64))
-                                            .collect(),
-                                        x1_history
-                                            .iter()
-                                            .enumerate()
-                                            .map(|(i, x)| (i as f64, *x as f64))
-                                            .collect(),
-                                        angle_history
-                                            .iter()
-                                            .enumerate()
-                                            .map(|(i, x)| (i as f64, *x as f64))
-                                            .collect(),
-                                    )?;
-
-                                    println!("{:?}", (x0, x1, raw_n, angle,));
-                                }
+                                dials[i] = g as u8;
                             }
                         }
 
                         last_raw_dials = raw_dials.into();
 
                         //
-                        // logging
-                        //
-
-                        if any_changed {
-                            let mut line = String::new();
-                            for (i, n) in dials.iter().enumerate() {
-                                line.push_str(&format!("{i: >2}:{n: <5}"));
-                            }
-                            // println!("{}", line);
-                        }
-
-                        //
-                        // sending MIDI
+                        // sending midi
                         //
 
                         for (i, n) in dials.iter().enumerate() {
-                            if i == 10 {
-                                let res = send_dial(i, *n);
-                                if res.is_err() {
-                                    println!("{:?}", res);
-                                }
+                            let res = send_dial(i, *n);
+                            if res.is_err() {
+                                println!("{:?}", res);
                             }
                         }
                     }
@@ -623,72 +508,6 @@ fn main() -> Result<()> {
             }
         }
     });
-
-    //
-    // handle MIDI for pads
-    //
-
-    let midi_output_conn_for_send_pads = midi_output_conn.clone();
-
-    let pad_is_on_by_note: Arc<Mutex<HashMap<u8, bool>>> = Arc::new(Mutex::new(HashMap::new()));
-
-    let send_pad = move |note: u8, velocity: u8, requested_is_on: bool| -> Result<()> {
-        let mut midi_output_conn = midi_output_conn_for_send_pads
-            .lock()
-            .ok()
-            .context("failed to lock mutex")?;
-
-        assert!(note < 128);
-
-        let mut is_on = {
-            let locked_pad_is_on_by_note = pad_is_on_by_note
-                .lock()
-                .ok()
-                .context("send_pad: failed to lock pad_is_on_by_note")?;
-
-            match locked_pad_is_on_by_note.get(&note) {
-                Some(is_on) => *is_on,
-                None => false,
-            }
-        };
-
-        if requested_is_on {
-            if is_on {
-                midi_output_conn
-                    .send(&[CHAN_1_POLYPHONIC_AFTERTOUCH, note, (velocity / 2)])
-                    .context("send_pad: note aftertouch failed")?;
-
-                return Ok(());
-            };
-
-            midi_output_conn
-                .send(&[CHAN_1_NOTE_ON, note, velocity])
-                .context("send_pad: note on failed")?;
-
-            is_on = true;
-        } else {
-            if !is_on {
-                return Ok(());
-            };
-
-            midi_output_conn
-                .send(&[CHAN_1_NOTE_OFF, note, velocity])
-                .context("send_pad: note off failed")?;
-
-            is_on = false;
-        }
-
-        {
-            let mut locked_pad_is_on_by_note = pad_is_on_by_note
-                .lock()
-                .ok()
-                .context("failed to lock mutex")?;
-
-            locked_pad_is_on_by_note.insert(note, is_on);
-        };
-
-        Ok(())
-    };
 
     //
     // handle pads input
@@ -712,8 +531,6 @@ fn main() -> Result<()> {
                     // decoding
                     //
 
-                    let mut any_changed = false;
-
                     // values are little-endian u16 (each 2-byte chunks is a pad state)
                     for x in raw_msg.chunks(2) {
                         assert!(x.len() == 2);
@@ -726,33 +543,15 @@ fn main() -> Result<()> {
                         // the bottom 12 bits is the value
                         let mut n = (raw_n & (4096 - 1)) as f64;
                         n /= 4095.0; // normalize 
-                        n *= 255.0; // re-scale to MIDI range
+                        n *= 255.0 / 2.0; // re-scale to midi range (0 -> 127 in this case)
 
-                        assert!(n <= 255.0);
-
-                        let old_n = pads[i as usize];
-
-                        if (n as u8) != old_n {
-                            any_changed = true;
-                        }
+                        assert!(n <= 127.0);
 
                         pads[i as usize] = n as u8;
                     }
 
                     //
-                    // logging
-                    //
-
-                    if any_changed {
-                        let mut line = String::new();
-                        for (i, n) in pads.iter().enumerate() {
-                            line.push_str(&format!("{i: >2}:{n: <5}"));
-                        }
-                        println!("{}", line);
-                    }
-
-                    //
-                    // sending MIDI
+                    // sending midi
                     //
 
                     for (i, n) in pads.iter().enumerate() {

@@ -1,0 +1,9 @@
+FROM rust:alpine3.23
+
+WORKDIR /srv/
+
+RUN rustup target add aarch64-unknown-linux-gnu
+RUN rustup target add x86_64-unknown-linux-gnu
+
+RUN apk add pkgconfig alsa-lib alsa-lib-dev alsa-utils
+RUN ldconfig
