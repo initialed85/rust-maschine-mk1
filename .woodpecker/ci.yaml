@@ -1,0 +1,15 @@
+# The Maschine MK1/MK3 controller tool. midir talks to ALSA, so the build needs libasound2-dev — the
+# same thing the repo's own Dockerfile.gnu installs.
+steps:
+  - name: check
+    image: docker.io/library/rust:1.99.1
+    commands:
+      - apt-get update -qq && apt-get install -y -qq --no-install-recommends libasound2-dev >/dev/null
+      - cargo fmt --check
+      - cargo build --release
+      - cargo test
+
+when:
+  - event: push
+    branch: master
+  - event: pull_request
